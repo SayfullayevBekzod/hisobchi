@@ -29,11 +29,46 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# 👇👇👇 SHU YERGA NEON HAVOLANGIZNI QO'YING 👇👇👇
+# 👇👇👇 NEON HAVOLANGIZNI SHU YERGA QO'YING 👇👇👇
 NEON_DB_URL = "postgresql://neondb_owner:npg_DE94nSeTHjLa@ep-dark-forest-ahrj0z9l-pooler.c-3.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require"
 # 👆👆👆👆👆👆👆👆👆👆👆👆👆👆👆👆👆👆👆👆👆👆
 
-# ==================== KATEGORIYA MANTIQI ====================
+# ==================== MANTIQ: MATNNI AJRATISH ====================
+def parse_expense_text(text: str) -> Tuple[float, str, str]:
+    """
+    Matn ichidan summa va nomni ajratib oladi.
+    Misol: "Taksiga 15000" -> (15000.0, "Taksiga", "Transport")
+    """
+    text = text.lower()
+    
+    # 1. Summani topish (Raqamlarni qidirish)
+    # Regex: Raqamlar (orasida probel yoki vergul bo'lishi mumkin)
+    match = re.search(r'(\d+(?:[.,\s]\d+)*)', text)
+    
+    amount = 0.0
+    title = text
+    
+    if match:
+        num_str = match.group(1).replace(" ", "").replace(",", ".")
+        try:
+            amount = float(num_str)
+            # Agar raqam 1000 dan kichik bo'lsa (masalan "50"), uni mingga ko'paytiramiz
+            if 0 < amount < 1000:
+                amount *= 1000
+            
+            # Matndan raqamni olib tashlaymiz, qolgani - harajat nomi
+            title = text.replace(match.group(1), "").replace("so'm", "").replace("som", "").strip()
+        except:
+            pass
+            
+    if not title or len(title) < 2:
+        title = "Nomsiz harajat"
+        
+    title = title.capitalize()
+    category = detect_category(title)
+    
+    return amount, title, category
+
 def detect_category(text: str) -> str:
     text = text.lower()
     categories = {
@@ -51,14 +86,15 @@ def detect_category(text: str) -> str:
             if keyword in text: return cat
     return "📦 Boshqa"
 
-# ==================== DATABASE CLASS (NEON / POSTGRESQL) ====================
+# ==================== DATABASE CLASS (NEON) ====================
 class TelegramExpenseBot:
     def __init__(self):
+        if "neondb_owner" in NEON_DB_URL: # URL o'zgarmagan bo'lsa ogohlantirish
+            print("DIQQAT: NEON_DB_URL o'zgartirilmagan! Kod ishlamaydi.")
         self.init_pool()
         self.init_database()
     
     def init_pool(self):
-        """Neon bazasiga ulanish hovuzini yaratish"""
         try:
             self.pool = psycopg2.pool.SimpleConnectionPool(1, 10, NEON_DB_URL)
             logger.info("✅ Neon PostgreSQL bazasiga ulandi!")
@@ -66,68 +102,19 @@ class TelegramExpenseBot:
             logger.error(f"❌ Baza ulanishida xato: {e}")
             raise e
 
-    def get_conn(self):
-        return self.pool.getconn()
-
-    def put_conn(self, conn):
-        if conn:
-            self.pool.putconn(conn)
+    def get_conn(self): return self.pool.getconn()
+    def put_conn(self, conn): 
+        if conn: self.pool.putconn(conn)
 
     def init_database(self):
         conn = self.get_conn()
         try:
             cursor = conn.cursor()
-            # Usersalizor
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS users (
-                    user_id SERIAL PRIMARY KEY,
-                    telegram_id BIGINT UNIQUE NOT NULL,
-                    custom_username TEXT UNIQUE NOT NULL,
-                    full_name TEXT, 
-                    budget_limit REAL DEFAULT 0, 
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            ''')
-            # Expenses
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS expenses (
-                    expense_id SERIAL PRIMARY KEY, 
-                    creator_id INTEGER NOT NULL REFERENCES users(user_id), 
-                    title TEXT NOT NULL, 
-                    amount REAL NOT NULL, 
-                    category TEXT NOT NULL, 
-                    expense_date DATE NOT NULL, 
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            ''')
-            # Links
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS user_links (
-                    link_id SERIAL PRIMARY KEY, 
-                    owner_id INTEGER NOT NULL REFERENCES users(user_id), 
-                    viewer_id INTEGER NOT NULL REFERENCES users(user_id), 
-                    UNIQUE(owner_id, viewer_id)
-                )
-            ''')
-            # Permissions
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS expense_permissions (
-                    permission_id SERIAL PRIMARY KEY, 
-                    expense_id INTEGER NOT NULL REFERENCES expenses(expense_id) ON DELETE CASCADE, 
-                    user_id INTEGER NOT NULL REFERENCES users(user_id), 
-                    UNIQUE(expense_id, user_id)
-                )
-            ''')
-            # Notifications
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS notifications (
-                    notification_id SERIAL PRIMARY KEY, 
-                    user_id INTEGER NOT NULL REFERENCES users(user_id), 
-                    message TEXT NOT NULL, 
-                    is_read BOOLEAN DEFAULT FALSE, 
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            ''')
+            cursor.execute('CREATE TABLE IF NOT EXISTS users (user_id SERIAL PRIMARY KEY, telegram_id BIGINT UNIQUE NOT NULL, custom_username TEXT UNIQUE NOT NULL, full_name TEXT, budget_limit REAL DEFAULT 0, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)')
+            cursor.execute('CREATE TABLE IF NOT EXISTS expenses (expense_id SERIAL PRIMARY KEY, creator_id INTEGER NOT NULL REFERENCES users(user_id), title TEXT NOT NULL, amount REAL NOT NULL, category TEXT NOT NULL, expense_date DATE NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)')
+            cursor.execute('CREATE TABLE IF NOT EXISTS user_links (link_id SERIAL PRIMARY KEY, owner_id INTEGER NOT NULL REFERENCES users(user_id), viewer_id INTEGER NOT NULL REFERENCES users(user_id), UNIQUE(owner_id, viewer_id))')
+            cursor.execute('CREATE TABLE IF NOT EXISTS expense_permissions (permission_id SERIAL PRIMARY KEY, expense_id INTEGER NOT NULL REFERENCES expenses(expense_id) ON DELETE CASCADE, user_id INTEGER NOT NULL REFERENCES users(user_id), UNIQUE(expense_id, user_id))')
+            cursor.execute('CREATE TABLE IF NOT EXISTS notifications (notification_id SERIAL PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(user_id), message TEXT NOT NULL, is_read BOOLEAN DEFAULT FALSE, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)')
             conn.commit()
         except Exception as e:
             conn.rollback()
@@ -158,8 +145,7 @@ class TelegramExpenseBot:
         conn = self.get_conn()
         try:
             cursor = conn.cursor()
-            cursor.execute('INSERT INTO users (telegram_id, custom_username, full_name) VALUES (%s, %s, %s)', 
-                         (telegram_id, username.lower(), full_name))
+            cursor.execute('INSERT INTO users (telegram_id, custom_username, full_name) VALUES (%s, %s, %s)', (telegram_id, username.lower(), full_name))
             conn.commit()
             return {'success': True}
         except psycopg2.IntegrityError:
@@ -177,10 +163,8 @@ class TelegramExpenseBot:
             partner = cursor.fetchone()
             if not partner: return {'success': False, 'message': "ID topilmadi!"}
             
-            # Postgres syntax (ON CONFLICT DO NOTHING)
             cursor.execute('INSERT INTO user_links (owner_id, viewer_id) VALUES (%s, %s) ON CONFLICT DO NOTHING', (owner_id, partner_user_id))
             cursor.execute('INSERT INTO user_links (owner_id, viewer_id) VALUES (%s, %s) ON CONFLICT DO NOTHING', (partner_user_id, owner_id))
-            
             cursor.execute('INSERT INTO expense_permissions (expense_id, user_id) SELECT expense_id, %s FROM expenses WHERE creator_id = %s ON CONFLICT DO NOTHING', (partner_user_id, owner_id))
             cursor.execute('INSERT INTO expense_permissions (expense_id, user_id) SELECT expense_id, %s FROM expenses WHERE creator_id = %s ON CONFLICT DO NOTHING', (owner_id, partner_user_id))
             
@@ -192,19 +176,14 @@ class TelegramExpenseBot:
         finally:
             self.put_conn(conn)
 
-    def create_expense(self, creator_id: int, title: str, amount: float) -> Dict:
+    def create_expense(self, creator_id: int, title: str, amount: float, category: str) -> Dict:
         conn = self.get_conn()
         try:
-            if 0 < amount < 1000: amount *= 1000
-            normalized_title = title.strip().capitalize()
-            category = detect_category(normalized_title)
-            
             cursor = conn.cursor()
             date = datetime.now().strftime('%Y-%m-%d')
             
-            # Insert and get ID
             cursor.execute('INSERT INTO expenses (creator_id, title, amount, category, expense_date) VALUES (%s, %s, %s, %s, %s) RETURNING expense_id', 
-                         (creator_id, normalized_title, amount, category, date))
+                         (creator_id, title, amount, category, date))
             exp_id = cursor.fetchone()[0]
             
             cursor.execute('INSERT INTO expense_permissions (expense_id, user_id) VALUES (%s, %s)', (exp_id, creator_id))
@@ -218,15 +197,10 @@ class TelegramExpenseBot:
             
             for p_id, p_tg in partners:
                 cursor.execute('INSERT INTO expense_permissions (expense_id, user_id) VALUES (%s, %s) ON CONFLICT DO NOTHING', (exp_id, p_id))
-                cursor.execute('INSERT INTO notifications (user_id, message) VALUES (%s, %s)', (p_id, f"🆕 {normalized_title}: {amount:,.0f} ({creator_name})"))
+                cursor.execute('INSERT INTO notifications (user_id, message) VALUES (%s, %s)', (p_id, f"🆕 {title}: {amount:,.0f} ({creator_name})"))
                 partner_tg_ids.append(p_tg)
             
-            # Limit check (Postgres Date functions)
-            cursor.execute('''
-                SELECT COALESCE(SUM(amount), 0), (SELECT budget_limit FROM users WHERE user_id = %s) 
-                FROM expenses 
-                WHERE creator_id = %s AND TO_CHAR(expense_date, 'YYYY-MM') = TO_CHAR(NOW(), 'YYYY-MM')
-            ''', (creator_id, creator_id))
+            cursor.execute('''SELECT COALESCE(SUM(amount), 0), (SELECT budget_limit FROM users WHERE user_id = %s) FROM expenses WHERE creator_id = %s AND TO_CHAR(expense_date, 'YYYY-MM') = TO_CHAR(NOW(), 'YYYY-MM')''', (creator_id, creator_id))
             spent, limit = cursor.fetchone()
             
             conn.commit()
@@ -284,65 +258,15 @@ class TelegramExpenseBot:
 
 bot_db = TelegramExpenseBot()
 
-# ==================== TEXT TO NUMBER ====================
-def uzbek_text_to_number(text: str) -> Tuple[float, str]:
-    text = text.lower().replace("so'm", "").replace("som", "").replace("sum", "").strip()
-    ONES = {"bir": 1, "ikki": 2, "uch": 3, "to'rt": 4, "tort": 4, "besh": 5, "olti": 6, "yetti": 7, "sakkiz": 8, "to'qqiz": 9, "toqqiz": 9, "yarim": 0.5}
-    TENS = {"o'n": 10, "on": 10, "yigirma": 20, "o'ttiz": 30, "ottiz": 30, "qirq": 40, "ellik": 50, "oltmish": 60, "yetmish": 70, "sakson": 80, "to'qson": 90, "toqson": 90}
-    MULTIPLIERS = {"yuz": 100, "ming": 1000, "min": 1000, "million": 1000000, "milyon": 1000000, "mln": 1000000}
-
-    words = text.split()
-    total_value = 0
-    current_chunk = 0
-    title_words = []
-    has_number = False
-
-    for word in words:
-        clean = word.replace(",", "").replace(".", "")
-        if clean.isdigit():
-            val = float(clean)
-            current_chunk += val
-            has_number = True
-        elif clean in ONES:
-            current_chunk += ONES[clean]
-            has_number = True
-        elif clean in TENS:
-            current_chunk += TENS[clean]
-            has_number = True
-        elif clean in MULTIPLIERS:
-            mult = MULTIPLIERS[clean]
-            has_number = True
-            if mult == 100:
-                if current_chunk == 0: current_chunk = 1
-                current_chunk *= 100
-            else:
-                if current_chunk == 0: current_chunk = 1
-                total_value += current_chunk * mult
-                current_chunk = 0
-        else:
-            title_words.append(word)
-
-    total_value += current_chunk
-    title = " ".join(title_words).strip().capitalize()
-    if 0 < total_value < 1000 and has_number: total_value *= 1000
-    if not has_number: return 0.0, text.capitalize()
-    return float(total_value), title
-
 # ==================== CHART GENERATION ====================
 def create_chart(stats):
     if not stats: return None
     labels = [row[0] for row in stats]
     sizes = [row[1] for row in stats]
     total = sum(sizes)
-
     fig, ax = plt.subplots(figsize=(8, 8))
     colors = ['#ff9999','#66b3ff','#99ff99','#ffcc99', '#c2c2f0', '#ffb3e6', '#c4e17f']
-    wedges, texts, autotexts = ax.pie(
-        sizes, labels=labels, autopct='%1.1f%%',
-        startangle=90, pctdistance=0.85, colors=colors[:len(labels)],
-        textprops=dict(color="black", fontsize=10, fontweight='bold'),
-        wedgeprops=dict(width=0.4, edgecolor='w')
-    )
+    wedges, texts, autotexts = ax.pie(sizes, labels=labels, autopct='%1.1f%%', startangle=90, pctdistance=0.85, colors=colors[:len(labels)], textprops=dict(color="black", fontsize=10, fontweight='bold'), wedgeprops=dict(width=0.4, edgecolor='w'))
     ax.text(0, 0, f"JAMI:\n{total:,.0f}", ha='center', va='center', fontsize=14, fontweight='bold')
     plt.title("Xarajatlar Kategoriyasi", fontsize=16, pad=20)
     buf = io.BytesIO()
@@ -352,62 +276,37 @@ def create_chart(stats):
     return buf
 
 # ==================== HANDLERS ====================
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = await asyncio.to_thread(bot_db.get_user, update.effective_user.id)
-    intro_text = (
-        "🤖 <b>Aqlli Hamyon Botiga Xush Kelibsiz!</b>\n\n"
-        "Men sizga moliyaviy erkinlikka erishishda yordam beraman.\n\n"
-        "🌟 <b>Mening imkoniyatlarim:</b>\n\n"
-        "🗣 <b>Ovozli va Matnli kiritish</b>\n"
-        "<i>\"Tushlik 50 ming\"</i> deb yozing yoki gapiring. Men o'zim tushunib, hisobga qo'shib qo'yaman.\n\n"
-        "🧠 <b>Aqlli Kategoriya</b>\n"
-        "Xarajat nomiga qarab avtomatik kategoriya aniqlayman.\n\n"
-        "👥 <b>Sheriklik Rejimi</b>\n"
-        "Hisob-kitobni sheriklar bilan birga yuriting.\n\n"
-        "🚀 <b>Boshlash uchun pastdagi tugmani bosing!</b>"
-    )
+    intro_text = "🤖 <b>Aqlli Hamyon Botiga Xush Kelibsiz!</b>\n\nMen sizga moliyaviy erkinlikka erishishda yordam beraman.\n\n🗣 <b>Ovozli va Matnli kiritish</b>\n<i>\"Tushlik 50 ming\"</i> deb yozing yoki gapiring.\n\n🧠 <b>Aqlli Kategoriya</b>\nAvtomatik aniqlanadi.\n\n👥 <b>Sheriklik Rejimi</b>\nBirgalikda hisob-kitob.\n\n🚀 <b>Boshlash uchun pastdagi tugmani bosing!</b>"
     if user:
         await update.message.reply_text(intro_text, parse_mode='HTML')
         await show_main_menu(update, f"Xush kelibsiz, <b>{user['full_name']}</b>!")
         context.user_data.clear()
     else:
         await update.message.reply_text(intro_text, parse_mode='HTML')
-        await update.message.reply_text("🆔 <b>Ro'yxatdan o'tish uchun o'zingizga unikal username tanlang:</b>", parse_mode='HTML')
+        await update.message.reply_text("🆔 <b>Ro'yxatdan o'tish uchun username tanlang:</b>", parse_mode='HTML')
         context.user_data['state'] = 'choosing_username'
 
 async def show_main_menu(update: Update, text: str):
-    kb = ReplyKeyboardMarkup([
-        [KeyboardButton("➕ Yangi harajat"), KeyboardButton("📋 Harajatlar")],
-        [KeyboardButton("📊 Statistika"), KeyboardButton("⚙️ Limit o'rnatish")],
-        [KeyboardButton("👥 Sherik qo'shish"), KeyboardButton("🆔 ID raqamim")]
-    ], resize_keyboard=True)
+    kb = ReplyKeyboardMarkup([[KeyboardButton("➕ Yangi harajat"), KeyboardButton("📋 Harajatlar")], [KeyboardButton("📊 Statistika"), KeyboardButton("⚙️ Limit o'rnatish")], [KeyboardButton("👥 Sherik qo'shish"), KeyboardButton("🆔 ID raqamim")]], resize_keyboard=True)
     if update.callback_query: 
         try: await update.callback_query.message.reply_text(text, reply_markup=kb, parse_mode='HTML')
         except: pass
-    else: 
-        await update.message.reply_text(text, reply_markup=kb, parse_mode='HTML')
+    else: await update.message.reply_text(text, reply_markup=kb, parse_mode='HTML')
 
-async def process_expense(update, context, user, amount, title, source_type="text"):
-    if len(title) < 2: title = "Nomsiz harajat"
-    res = await asyncio.to_thread(bot_db.create_expense, user['user_id'], title, amount)
+async def process_expense(update, context, user, amount, title, category, source_type="text"):
+    res = await asyncio.to_thread(bot_db.create_expense, user['user_id'], title, amount, category)
     
     if not res.get('success'):
-        await update.message.reply_text(f"❌ Baza xatosi: {res.get('message', 'Noma\'lum xato')}")
+        await update.message.reply_text(f"❌ Baza xatosi: {res.get('message')}")
         return
 
     icon = "🗣" if source_type == "voice" else "✍️"
-    response_text = (
-        f"{icon} <b>Qabul qilindi!</b>\n\n"
-        f"📝 <b>{title}</b>\n"
-        f"📂 <i>{res['category']}</i>\n"
-        f"💰 <b>{res['final_amount']:,.0f} so'm</b>"
-    )
+    response_text = f"{icon} <b>Qabul qilindi!</b>\n\n📝 <b>{title}</b>\n📂 <i>{res['category']}</i>\n💰 <b>{res['final_amount']:,.0f} so'm</b>"
     
-    if source_type == "voice":
-        await update.message.reply_text(response_text, parse_mode='HTML')
-    else:
-        await show_main_menu(update, response_text)
+    if source_type == "voice": await update.message.reply_text(response_text, parse_mode='HTML')
+    else: await show_main_menu(update, response_text)
 
     partners = res['partner_tg_ids']
     if res['is_limit_reached']:
@@ -424,16 +323,13 @@ async def process_expense(update, context, user, amount, title, source_type="tex
 async def voice_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = await asyncio.to_thread(bot_db.get_user, update.effective_user.id)
     if not user: return await update.message.reply_text("Avval /start bosing.")
-
     waiting_msg = await update.message.reply_text("🎤 Eshitayapman...")
-
     try:
         new_file = await context.bot.get_file(update.message.voice.file_id)
         file_path = f"voice_{update.effective_user.id}.ogg"
         wav_path = f"voice_{update.effective_user.id}.wav"
-        
         await new_file.download_to_drive(file_path)
-
+        
         def convert_and_recognize():
             data, samplerate = sf.read(file_path)
             sf.write(wav_path, data, samplerate, subtype='PCM_16')
@@ -444,29 +340,22 @@ async def voice_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 except: return ""
         
         text = await asyncio.to_thread(convert_and_recognize)
-        
         if os.path.exists(file_path): os.remove(file_path)
         if os.path.exists(wav_path): os.remove(wav_path)
-        
         await waiting_msg.delete()
-
-        if not text: 
-            return await update.message.reply_text("🤷‍♂️ Tushunmadim.")
-
-        amount, title = uzbek_text_to_number(text)
+        if not text: return await update.message.reply_text("🤷‍♂️ Tushunmadim.")
         
-        if amount > 0:
-            await process_expense(update, context, user, amount, title, source_type="voice")
+        # Aqlli analiz
+        amount, title, category = parse_expense_text(text)
+        
+        if amount > 0: await process_expense(update, context, user, amount, title, category, source_type="voice")
         else:
             context.user_data['title'] = text
             context.user_data['state'] = 'exp_amount'
             await update.message.reply_text(f"🗣 <b>Eshitdim:</b> \"{text}\"\n📝 Nomi tushunarli. Endi summani yozing:", parse_mode='HTML')
-
     except Exception as e:
         logger.error(f"Voice Error: {e}")
         await update.message.reply_text(f"❌ Xatolik: {e}")
-        if os.path.exists(file_path): os.remove(file_path)
-        if os.path.exists(wav_path): os.remove(wav_path)
 
 async def delete_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -485,9 +374,9 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     state = context.user_data.get('state')
 
     if state == 'choosing_username':
-        if len(msg) < 3: return await update.message.reply_text("Username qisqa (min 3 harf).")
+        if len(msg) < 3: return await update.message.reply_text("Username qisqa.")
         exists = await asyncio.to_thread(bot_db.check_username_exists, msg)
-        if exists: await update.message.reply_text("❌ Bu username band.")
+        if exists: await update.message.reply_text("❌ Band.")
         else:
             res = await asyncio.to_thread(bot_db.register_user, update.effective_user.id, msg, update.effective_user.first_name)
             if res['success']:
@@ -501,31 +390,31 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else: await update.message.reply_text("Iltimos /start bosing")
         return
 
+    # Aqlli analiz (State yo'q bo'lsa)
     if state is None and msg not in ["➕ Yangi harajat", "📋 Harajatlar", "📊 Statistika", "⚙️ Limit o'rnatish", "👥 Sherik qo'shish", "🆔 ID raqamim"]:
-        amount, title = uzbek_text_to_number(msg)
+        amount, title, category = parse_expense_text(msg)
         if amount > 0:
-            await process_expense(update, context, user, amount, title, source_type="text")
+            await process_expense(update, context, user, amount, title, category, source_type="text")
             return
 
     if msg == "➕ Yangi harajat":
-        await update.message.reply_text("📝 <b>Harajat nomini yozing:</b>", parse_mode='HTML', reply_markup=ReplyKeyboardRemove())
+        await update.message.reply_text("📝 <b>Nomi:</b>", parse_mode='HTML', reply_markup=ReplyKeyboardRemove())
         context.user_data['state'] = 'exp_title'
     elif msg == "📋 Harajatlar":
         exps, total = await asyncio.to_thread(bot_db.get_expenses, user['user_id'])
-        if not exps: await update.message.reply_text("📭 Harajatlar yo'q")
+        if not exps: await update.message.reply_text("📭 Bo'sh")
         else:
-            await update.message.reply_text(f"💰 <b>JAMI: {total:,.0f} so'm</b>\nSo'nggi 10 ta:", parse_mode='HTML')
+            await update.message.reply_text(f"💰 <b>JAMI: {total:,.0f} so'm</b>", parse_mode='HTML')
             for e in exps:
                 txt = f"🗓 <b>{e[1]}</b>\n💸 {e[2]:,.0f} so'm\n📂 {e[4]}\n👤 {e[3]}"
                 if e[5] == user['user_id']:
                     await update.message.reply_text(txt, parse_mode='HTML', reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🗑 O'chirish", callback_data=f"del_{e[0]}")]]))
                 else: await update.message.reply_text(txt, parse_mode='HTML')
-
     elif msg == "⚙️ Limit o'rnatish":
-        await update.message.reply_text("💰 <b>Oylik limit summasini yozing:</b>", parse_mode='HTML', reply_markup=ReplyKeyboardRemove())
+        await update.message.reply_text("💰 <b>Summa:</b>", parse_mode='HTML', reply_markup=ReplyKeyboardRemove())
         context.user_data['state'] = 'setting_limit'
     elif msg == "👥 Sherik qo'shish":
-        await update.message.reply_text("🆔 <b>Sherigingizning ID raqamini yozing:</b>", parse_mode='HTML', reply_markup=ReplyKeyboardRemove())
+        await update.message.reply_text("🆔 <b>ID raqam:</b>", parse_mode='HTML', reply_markup=ReplyKeyboardRemove())
         context.user_data['state'] = 'adding_partner'
     elif msg == "🆔 ID raqamim":
         await update.message.reply_text(f"🆔 ID: <code>{user['user_id']}</code>", parse_mode='HTML')
@@ -534,32 +423,31 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if stats:
             chart = await asyncio.to_thread(create_chart, stats)
             total = sum([s[1] for s in stats])
-            report = "📊 <b>KATEGORIYALAR BO'YICHA:</b>\n\n"
-            for s in stats: report += f"🔹 {s[0]}: <b>{s[1]:,.0f}</b>\n"
-            report += f"\n💰 <b>JAMI: {total:,.0f} so'm</b>"
+            report = f"💰 <b>JAMI: {total:,.0f} so'm</b>"
             await update.message.reply_photo(chart, caption=report, parse_mode='HTML')
         else: await update.message.reply_text("Ma'lumot yo'q")
-
     elif state == 'exp_title':
         context.user_data['title'] = msg
-        await update.message.reply_text("💰 <b>Summani yozing:</b>", parse_mode='HTML')
+        await update.message.reply_text("💰 <b>Summa:</b>", parse_mode='HTML')
         context.user_data['state'] = 'exp_amount'
     elif state == 'exp_amount':
         try:
             val = float(msg.replace(" ", "").replace(",", ""))
-            await process_expense(update, context, user, val, context.user_data['title'], source_type="text")
+            # Kategoriya aniqlash
+            category = detect_category(context.user_data['title'])
+            await process_expense(update, context, user, val, context.user_data['title'], category, source_type="text")
             context.user_data.clear()
-        except: await update.message.reply_text("❌ Faqat raqam yozing!")
+        except: await update.message.reply_text("❌ Raqam yozing!")
     elif state == 'adding_partner':
         try:
             res = await asyncio.to_thread(bot_db.add_partner_by_id, user['user_id'], int(msg))
-            await show_main_menu(update, f"✅ <b>{res['partner_name']}</b> ulandi!" if res['success'] else f"❌ {res['message']}")
+            await show_main_menu(update, f"✅ {res['partner_name']} ulandi!" if res['success'] else f"❌ {res['message']}")
             context.user_data.clear()
         except: pass
     elif state == 'setting_limit':
         try:
             await asyncio.to_thread(bot_db.set_limit, user['user_id'], float(msg))
-            await show_main_menu(update, "✅ <b>Limit o'rnatildi!</b>")
+            await show_main_menu(update, "✅ Limit o'rnatildi!")
             context.user_data.clear()
         except: pass
 
