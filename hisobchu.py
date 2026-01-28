@@ -29,44 +29,26 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# 👇👇👇 NEON HAVOLANGIZNI SHU YERGA QO'YING 👇👇👇
+# 👇👇👇 BU YERGA NEON HAVOLANGIZNI QO'YING (QUYIDAGI MENING MISOLIMNI O'CHIRIB TASHLANG) 👇👇👇
 NEON_DB_URL = "postgresql://neondb_owner:npg_DE94nSeTHjLa@ep-dark-forest-ahrj0z9l-pooler.c-3.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require"
-# 👆👆👆👆👆👆👆👆👆👆👆👆👆👆👆👆👆👆👆👆👆👆
+# 👆👆👆 O'ZINGIZNING HAVOLANGIZNI QO'YMASANGIZ ISHLAMAYDI!!! 👆👆👆
 
 # ==================== MANTIQ: MATNNI AJRATISH ====================
 def parse_expense_text(text: str) -> Tuple[float, str, str]:
-    """
-    Matn ichidan summa va nomni ajratib oladi.
-    Misol: "Taksiga 15000" -> (15000.0, "Taksiga", "Transport")
-    """
     text = text.lower()
-    
-    # 1. Summani topish (Raqamlarni qidirish)
-    # Regex: Raqamlar (orasida probel yoki vergul bo'lishi mumkin)
     match = re.search(r'(\d+(?:[.,\s]\d+)*)', text)
-    
     amount = 0.0
     title = text
-    
     if match:
         num_str = match.group(1).replace(" ", "").replace(",", ".")
         try:
             amount = float(num_str)
-            # Agar raqam 1000 dan kichik bo'lsa (masalan "50"), uni mingga ko'paytiramiz
-            if 0 < amount < 1000:
-                amount *= 1000
-            
-            # Matndan raqamni olib tashlaymiz, qolgani - harajat nomi
+            if 0 < amount < 1000: amount *= 1000
             title = text.replace(match.group(1), "").replace("so'm", "").replace("som", "").strip()
-        except:
-            pass
-            
-    if not title or len(title) < 2:
-        title = "Nomsiz harajat"
-        
+        except: pass
+    if not title or len(title) < 2: title = "Nomsiz harajat"
     title = title.capitalize()
     category = detect_category(title)
-    
     return amount, title, category
 
 def detect_category(text: str) -> str:
@@ -89,8 +71,6 @@ def detect_category(text: str) -> str:
 # ==================== DATABASE CLASS (NEON) ====================
 class TelegramExpenseBot:
     def __init__(self):
-        if "neondb_owner" in NEON_DB_URL: # URL o'zgarmagan bo'lsa ogohlantirish
-            print("DIQQAT: NEON_DB_URL o'zgartirilmagan! Kod ishlamaydi.")
         self.init_pool()
         self.init_database()
     
@@ -100,7 +80,7 @@ class TelegramExpenseBot:
             logger.info("✅ Neon PostgreSQL bazasiga ulandi!")
         except Exception as e:
             logger.error(f"❌ Baza ulanishida xato: {e}")
-            raise e
+            raise e # Xato bo'lsa to'xtasin
 
     def get_conn(self): return self.pool.getconn()
     def put_conn(self, conn): 
@@ -167,7 +147,6 @@ class TelegramExpenseBot:
             cursor.execute('INSERT INTO user_links (owner_id, viewer_id) VALUES (%s, %s) ON CONFLICT DO NOTHING', (partner_user_id, owner_id))
             cursor.execute('INSERT INTO expense_permissions (expense_id, user_id) SELECT expense_id, %s FROM expenses WHERE creator_id = %s ON CONFLICT DO NOTHING', (partner_user_id, owner_id))
             cursor.execute('INSERT INTO expense_permissions (expense_id, user_id) SELECT expense_id, %s FROM expenses WHERE creator_id = %s ON CONFLICT DO NOTHING', (owner_id, partner_user_id))
-            
             conn.commit()
             return {'success': True, 'partner_name': partner[0]}
         except Exception as e:
@@ -181,28 +160,20 @@ class TelegramExpenseBot:
         try:
             cursor = conn.cursor()
             date = datetime.now().strftime('%Y-%m-%d')
-            
-            cursor.execute('INSERT INTO expenses (creator_id, title, amount, category, expense_date) VALUES (%s, %s, %s, %s, %s) RETURNING expense_id', 
-                         (creator_id, title, amount, category, date))
+            cursor.execute('INSERT INTO expenses (creator_id, title, amount, category, expense_date) VALUES (%s, %s, %s, %s, %s) RETURNING expense_id', (creator_id, title, amount, category, date))
             exp_id = cursor.fetchone()[0]
-            
             cursor.execute('INSERT INTO expense_permissions (expense_id, user_id) VALUES (%s, %s)', (exp_id, creator_id))
-            
             cursor.execute('SELECT u.user_id, u.telegram_id FROM user_links ul JOIN users u ON ul.viewer_id = u.user_id WHERE ul.owner_id = %s', (creator_id,))
             partners = cursor.fetchall()
-            
             cursor.execute('SELECT full_name FROM users WHERE user_id = %s', (creator_id,))
             creator_name = cursor.fetchone()[0]
             partner_tg_ids = []
-            
             for p_id, p_tg in partners:
                 cursor.execute('INSERT INTO expense_permissions (expense_id, user_id) VALUES (%s, %s) ON CONFLICT DO NOTHING', (exp_id, p_id))
                 cursor.execute('INSERT INTO notifications (user_id, message) VALUES (%s, %s)', (p_id, f"🆕 {title}: {amount:,.0f} ({creator_name})"))
                 partner_tg_ids.append(p_tg)
-            
             cursor.execute('''SELECT COALESCE(SUM(amount), 0), (SELECT budget_limit FROM users WHERE user_id = %s) FROM expenses WHERE creator_id = %s AND TO_CHAR(expense_date, 'YYYY-MM') = TO_CHAR(NOW(), 'YYYY-MM')''', (creator_id, creator_id))
             spent, limit = cursor.fetchone()
-            
             conn.commit()
             return {'success': True, 'total': spent, 'limit': limit, 'is_limit_reached': (limit > 0 and spent >= limit), 'partner_tg_ids': partner_tg_ids, 'creator_name': creator_name, 'final_amount': amount, 'category': category}
         except Exception as e:
@@ -297,17 +268,13 @@ async def show_main_menu(update: Update, text: str):
 
 async def process_expense(update, context, user, amount, title, category, source_type="text"):
     res = await asyncio.to_thread(bot_db.create_expense, user['user_id'], title, amount, category)
-    
     if not res.get('success'):
         await update.message.reply_text(f"❌ Baza xatosi: {res.get('message')}")
         return
-
     icon = "🗣" if source_type == "voice" else "✍️"
     response_text = f"{icon} <b>Qabul qilindi!</b>\n\n📝 <b>{title}</b>\n📂 <i>{res['category']}</i>\n💰 <b>{res['final_amount']:,.0f} so'm</b>"
-    
     if source_type == "voice": await update.message.reply_text(response_text, parse_mode='HTML')
     else: await show_main_menu(update, response_text)
-
     partners = res['partner_tg_ids']
     if res['is_limit_reached']:
         alert = f"🚨 <b>DIQQAT! LIMIT OSHDI!</b>\n({res['total']:,.0f} / {res['limit']:,.0f})"
@@ -344,10 +311,7 @@ async def voice_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if os.path.exists(wav_path): os.remove(wav_path)
         await waiting_msg.delete()
         if not text: return await update.message.reply_text("🤷‍♂️ Tushunmadim.")
-        
-        # Aqlli analiz
         amount, title, category = parse_expense_text(text)
-        
         if amount > 0: await process_expense(update, context, user, amount, title, category, source_type="voice")
         else:
             context.user_data['title'] = text
@@ -390,7 +354,6 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else: await update.message.reply_text("Iltimos /start bosing")
         return
 
-    # Aqlli analiz (State yo'q bo'lsa)
     if state is None and msg not in ["➕ Yangi harajat", "📋 Harajatlar", "📊 Statistika", "⚙️ Limit o'rnatish", "👥 Sherik qo'shish", "🆔 ID raqamim"]:
         amount, title, category = parse_expense_text(msg)
         if amount > 0:
@@ -433,7 +396,6 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif state == 'exp_amount':
         try:
             val = float(msg.replace(" ", "").replace(",", ""))
-            # Kategoriya aniqlash
             category = detect_category(context.user_data['title'])
             await process_expense(update, context, user, val, context.user_data['title'], category, source_type="text")
             context.user_data.clear()
@@ -452,6 +414,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except: pass
 
 def main():
+    # 👇 TOKENINGIZNI SHU YERGA QO'YING 👇
     TOKEN = "8531060867:AAE7rrbe7NglVju8fb0yRY7LslOa40Z0H2E"
     req = HTTPXRequest(connection_pool_size=1000, connect_timeout=30)
     app = Application.builder().token(TOKEN).request(req).build()
