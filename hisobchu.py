@@ -10,6 +10,8 @@ import matplotlib
 import matplotlib.pyplot as plt
 import psycopg2
 from psycopg2 import pool
+from http.server import HTTPServer, BaseHTTPRequestHandler
+from threading import Thread
 from datetime import datetime
 from typing import Dict, List, Tuple
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove, InlineKeyboardButton, InlineKeyboardMarkup
@@ -19,7 +21,7 @@ from telegram.ext import (
 )
 from telegram.request import HTTPXRequest
 
-# Serverda ishlashi uchun
+# Serverda (ekransiz) ishlashi uchun
 matplotlib.use('Agg')
 
 # Logging
@@ -29,9 +31,24 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# 👇👇👇 BU YERGA NEON HAVOLANGIZNI QO'YING (QUYIDAGI MENING MISOLIMNI O'CHIRIB TASHLANG) 👇👇👇
+# 👇👇👇 NEON HAVOLANGIZNI SHU YERGA QO'YING 👇👇👇
 NEON_DB_URL = "postgresql://neondb_owner:npg_DE94nSeTHjLa@ep-dark-forest-ahrj0z9l-pooler.c-3.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require"
-# 👆👆👆 O'ZINGIZNING HAVOLANGIZNI QO'YMASANGIZ ISHLAMAYDI!!! 👆👆👆
+# 👆👆👆👆👆👆👆👆👆👆👆👆👆👆👆👆👆👆👆👆👆👆👆👆👆
+
+# ==================== RENDER UCHUN WEB SERVER (MUHIM!) ====================
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Bot is running!")
+
+def start_health_check_server():
+    # Render bergan portni oladi, bo'lmasa 8080
+    port = int(os.environ.get("PORT", 8080))
+    server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
+    print(f"✅ Health check server {port}-portda ishga tushdi.")
+    server.serve_forever()
+# =========================================================================
 
 # ==================== MANTIQ: MATNNI AJRATISH ====================
 def parse_expense_text(text: str) -> Tuple[float, str, str]:
@@ -71,6 +88,8 @@ def detect_category(text: str) -> str:
 # ==================== DATABASE CLASS (NEON) ====================
 class TelegramExpenseBot:
     def __init__(self):
+        if "SIZNING_NEON" in NEON_DB_URL:
+            print("❌ XATOLIK: NEON_DB_URL o'zgartirilmagan!")
         self.init_pool()
         self.init_database()
     
@@ -80,7 +99,7 @@ class TelegramExpenseBot:
             logger.info("✅ Neon PostgreSQL bazasiga ulandi!")
         except Exception as e:
             logger.error(f"❌ Baza ulanishida xato: {e}")
-            raise e # Xato bo'lsa to'xtasin
+            raise e
 
     def get_conn(self): return self.pool.getconn()
     def put_conn(self, conn): 
@@ -147,6 +166,7 @@ class TelegramExpenseBot:
             cursor.execute('INSERT INTO user_links (owner_id, viewer_id) VALUES (%s, %s) ON CONFLICT DO NOTHING', (partner_user_id, owner_id))
             cursor.execute('INSERT INTO expense_permissions (expense_id, user_id) SELECT expense_id, %s FROM expenses WHERE creator_id = %s ON CONFLICT DO NOTHING', (partner_user_id, owner_id))
             cursor.execute('INSERT INTO expense_permissions (expense_id, user_id) SELECT expense_id, %s FROM expenses WHERE creator_id = %s ON CONFLICT DO NOTHING', (owner_id, partner_user_id))
+            
             conn.commit()
             return {'success': True, 'partner_name': partner[0]}
         except Exception as e:
@@ -416,6 +436,11 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     # 👇 TOKENINGIZNI SHU YERGA QO'YING 👇
     TOKEN = "8531060867:AAE7rrbe7NglVju8fb0yRY7LslOa40Z0H2E"
+    
+    # 1. SERVERNI ISHGA TUSHIRISH (Fonda)
+    Thread(target=start_health_check_server, daemon=True).start()
+    
+    # 2. BOTNI ISHGA TUSHIRISH
     req = HTTPXRequest(connection_pool_size=1000, connect_timeout=30)
     app = Application.builder().token(TOKEN).request(req).build()
     app.add_handler(CommandHandler("start", start))
